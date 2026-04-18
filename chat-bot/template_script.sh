@@ -6,9 +6,10 @@
 # export no_proxy=
 
 # Mattermost
-export MATTERMOST_URL=http://127.0.0.1
+export MATTERMOST_URL=matter.example.com
 export MATTERMOST_PORT=8065
 export MATTERMOST_API_PATH=/api/v4
+export SCHEME=https
 export BOT_TOKEN=
 # Override the WebSocket Origin header (e.g. when the bot connects to an
 # internal host but the Mattermost server validates against the public URL).

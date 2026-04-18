@@ -200,26 +200,6 @@ class ChatBot(Plugin):
 
         self.provider = create_provider()
 
-        # Mattermost
-        self.is_typing = True
-
-        self.websocket_auth = {
-            "seq": 1,
-            "action": "authentication_challenge",
-            "data": {
-                "token": ""
-            }
-        }
-
-        self.websocket_typing = {
-            "action": "user_typing",
-            "seq": 2,
-            "data": {
-                "channel_id": "",
-                "parent_id": ""
-            }
-        }
-
     @listen_to("")
     def respond(self, message: Message):
         if self.driver is None:
@@ -227,13 +207,6 @@ class ChatBot(Plugin):
 
         if self.settings is None:
             raise ValueError("self.setting is None")
-
-        self.is_typing = True
-        self.websocket_auth["data"]["token"] = self.settings.BOT_TOKEN
-        self.websocket_typing["data"]["channel_id"] = message.channel_id
-
-        # Use message.root_id. Note that message.parent_id is not defined.
-        self.websocket_typing["data"]["parent_id"] = message.root_id
 
         # Get the entire thread.
         thread = self.driver.get_post_thread(message.id)
@@ -259,16 +232,20 @@ class ChatBot(Plugin):
         log.info("API Request: " +
                  json.dumps(requestMessages, ensure_ascii=False))
 
+        ws = None
+        stop_typing = threading.Event()
+
         try:
             # Start typing.
             # Connect separately as I cannot find a way to use the WebSocket connection
             # used by the bot itself.
+            websocket_auth = self.build_websocket_auth()
+            websocket_typing = self.build_websocket_typing(message)
             ws = websocket.WebSocket()
             ws.connect(self.build_websocket_url(),
                        origin=self.build_websocket_origin())
-            ws.send(json.dumps(self.websocket_auth))
-            self.send_typing(ws)
-
+            ws.send(json.dumps(websocket_auth))
+            self.send_typing(ws, websocket_typing, stop_typing)
 
             # Reply with an empty message and update with stream data.
             reply = self.driver.reply_to(message, "")
@@ -309,11 +286,16 @@ class ChatBot(Plugin):
         except Exception:
             stacktrace = traceback.format_exc()
             log.error(f"Exception:\n{stacktrace}")
-            self.driver.create_post(
-                message.channel_id, f"Exception occured.\n```{stacktrace}```")
+            self.driver.reply_to(
+                message,
+                "An internal error occurred while generating the reply. "
+                "Please try again later."
+            )
         finally:
             # Stop typing.
-            self.is_typing = False
+            stop_typing.set()
+            if ws is not None:
+                ws.close()
 
     def is_reply_required(self, thread, sender_name: str, channel) -> bool:
         """
@@ -381,16 +363,43 @@ class ChatBot(Plugin):
         scheme = "https://" if self.settings.SCHEME == "https" else "http://"
         return scheme + self.settings.MATTERMOST_URL
 
-    def send_typing(self, ws: websocket.WebSocket):
+    def build_websocket_auth(self) -> dict:
+        if self.settings is None:
+            raise ValueError("self.setting is None")
+
+        return {
+            "seq": 1,
+            "action": "authentication_challenge",
+            "data": {
+                "token": self.settings.BOT_TOKEN
+            }
+        }
+
+    def build_websocket_typing(self, message: Message) -> dict:
+        return {
+            "action": "user_typing",
+            "seq": 2,
+            "data": {
+                "channel_id": message.channel_id,
+                # Use message.root_id. Note that message.parent_id is not defined.
+                "parent_id": message.root_id
+            }
+        }
+
+    def send_typing(self, ws: websocket.WebSocket, websocket_typing: dict,
+                    stop_typing: threading.Event):
         """
         Notify that the bot is typing.
         """
 
-        ws.send(json.dumps(self.websocket_typing))
-        if self.is_typing:
-            threading.Timer(1.0, self.send_typing, args=[ws]).start()
-        else:
-            ws.close()
+        if stop_typing.is_set():
+            return
+
+        ws.send(json.dumps(websocket_typing))
+        timer = threading.Timer(
+            1.0, self.send_typing, args=[ws, websocket_typing, stop_typing])
+        timer.daemon = True
+        timer.start()
 
 
 if __name__ == "__main__":

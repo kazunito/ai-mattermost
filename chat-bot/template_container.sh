@@ -6,9 +6,10 @@ podman run \
         --env=http_proxy= \
         --env=https_proxy= \
         --env=no_proxy= \
-        --env=MATTERMOST_URL=http://127.0.0.1 \
+        --env=MATTERMOST_URL=matter.example.com \
         --env=MATTERMOST_PORT=8065 \
         --env=MATTERMOST_API_PATH=/api/v4 \
+        --env=SCHEME=https \
         --env=BOT_TOKEN= \
         --env=MATTERMOST_ORIGIN= \
         --env=LLM_PROVIDER=gemini \
