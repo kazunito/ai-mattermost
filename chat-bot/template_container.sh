@@ -1,0 +1,19 @@
+#!/bin/bash
+
+podman run \
+        --detach \
+        --restart=always \
+        --env=http_proxy= \
+        --env=https_proxy= \
+        --env=no_proxy= \
+        --env=MATTERMOST_URL=http://127.0.0.1 \
+        --env=MATTERMOST_PORT=8065 \
+        --env=MATTERMOST_API_PATH=/api/v4 \
+        --env=BOT_TOKEN= \
+        --env=MATTERMOST_ORIGIN= \
+        --env=LLM_PROVIDER=gemini \
+        --env=AI_MODEL=gemini-1.5-flash \
+        --env=AI_MAX_TOKENS=4096 \
+        --env=AI_API_KEY= \
+        --name=gemini-chat-bot \
+        gemini-chat-bot:20240101

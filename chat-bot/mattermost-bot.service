@@ -1,0 +1,16 @@
+[Unit]
+Description=Mattermost Chat Bot
+After=network.target
+
+[Service]
+Type=simple
+User=mmbot
+Group=mmbot
+WorkingDirectory=/opt/ai-mattermost-bot/chat-bot
+ExecStart=/opt/ai-mattermost-bot/chat-bot/.venv/bin/python3 /opt/ai-mattermost-bot/chat-bot/gemini-chat-bot.py
+EnvironmentFile=/opt/ai-mattermost-bot/chat-bot/bot.env
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
