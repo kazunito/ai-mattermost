@@ -1,4 +1,4 @@
-# ai-mattermost-bot
+# gemini-mattermost-bot
 
 This is a Mattermost Bot that uses the Gemini API, the Claude (Anthropic) API,
 or the DeepSeek API as its backend.
@@ -78,13 +78,14 @@ control (see `.gitignore`) and restrict its permissions to the service user.
 ## Config
 
 Set the following environment variables.
-Please refer to `template_script.sh` and `template_container.sh`.
+Please refer to `bot.env`, `template_script.sh` and `template_container.sh`.
 
 | Name | Required | Example |
 | ---- | ---- | ---- |
-| MATTERMOST_URL | yes | mattermost.example.com |
-| MATTERMOST_PORT | yes | 8065 |
+| MATTERMOST_URL | yes | matter.example.com |
+| MATTERMOST_PORT | yes | 443 |
 | MATTERMOST_API_PATH | yes | /api/v4 |
+| SCHEME | yes | `http` or `https` |
 | BOT_TOKEN | yes | xxxxxxxx |
 | MATTERMOST_ORIGIN | no (default: `SCHEME + MATTERMOST_URL`) | <https://matter.example.com> |
 | LLM_PROVIDER | no (default: `gemini`) | `gemini`, `claude` or `deepseek` |
@@ -149,9 +150,12 @@ Mention the bot and it will respond with a thread.
 If you reply to the thread, you can continue the conversation.
 You do not need to re-mention the bot at this time.
 
-![Chat Sample](sample_chat.png)
+<!-- TODO: replace with a new chat sample image -->
 
 ## License
 
-MIT License  
-Copyright (c) 2023-2024 Sadao Hiratsuka
+MIT License — free for anyone to use, modify, and distribute.
+See [LICENSE](LICENSE) for the full text.
+
+Copyright (c) 2023-2024 Sadao Hiratsuka (original author)  
+Copyright (c) 2026 kazunito
