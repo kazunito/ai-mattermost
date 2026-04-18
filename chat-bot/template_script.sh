@@ -31,4 +31,4 @@ export AI_API_KEY=
 # DeepSeek only: override the API endpoint if needed.
 # export DEEPSEEK_BASE_URL=https://api.deepseek.com
 
-python3 gemini-chat-bot.py
+python3 ai-chat-bot.py

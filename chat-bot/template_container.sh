@@ -16,5 +16,5 @@ podman run \
         --env=AI_MODEL=gemini-1.5-flash \
         --env=AI_MAX_TOKENS=4096 \
         --env=AI_API_KEY= \
-        --name=gemini-chat-bot \
-        gemini-chat-bot:20240101
+        --name=ai-chat-bot \
+        ai-chat-bot:20240101

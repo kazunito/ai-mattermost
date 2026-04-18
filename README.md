@@ -27,7 +27,7 @@ The following is the setup instructions for building a Podman/Docker container.
 ```bash
 git clone https://github.com/kazunito/ai-mattermost-bot.git ai-mattermost-bot
 cd ai-mattermost-bot/chat-bot
-podman build -t gemini-chat-bot .
+podman build -t ai-chat-bot .
 cp template_container.sh container.sh
 vim container.sh
 ./container.sh
