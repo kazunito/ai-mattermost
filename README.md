@@ -82,7 +82,7 @@ Please refer to `template_script.sh` and `template_container.sh`.
 
 | Name | Required | Example |
 | ---- | ---- | ---- |
-| MATTERMOST_URL | yes | <mattermost.example.com> |
+| MATTERMOST_URL | yes | mattermost.example.com |
 | MATTERMOST_PORT | yes | 8065 |
 | MATTERMOST_API_PATH | yes | /api/v4 |
 | BOT_TOKEN | yes | xxxxxxxx |
