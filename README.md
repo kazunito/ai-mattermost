@@ -1,4 +1,4 @@
-# gemini-mattermost-bot
+# ai-mattermost-bot
 
 This is a Mattermost Bot that uses the Gemini API, the Claude (Anthropic) API,
 or the DeepSeek API as its backend.
