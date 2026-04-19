@@ -342,9 +342,13 @@ class ChatBot(Plugin):
         if self.settings.SCHEME == "https":
             protocol = "wss://"
 
+        api_path = self.settings.MATTERMOST_API_PATH \
+            or os.environ.get("MATTERMOST_API_PATH") \
+            or "/api/v4"
+
         return protocol + self.settings.MATTERMOST_URL + ":" + \
             str(self.settings.MATTERMOST_PORT) + \
-            self.settings.MATTERMOST_API_PATH + "/websocket"
+            api_path + "/websocket"
 
     def build_websocket_origin(self) -> str:
         """
