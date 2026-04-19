@@ -7,7 +7,7 @@ podman run \
         --env=https_proxy= \
         --env=no_proxy= \
         --env=MATTERMOST_URL=matter.example.com \
-        --env=MATTERMOST_PORT=8065 \
+        --env=MATTERMOST_PORT=443 \
         --env=MATTERMOST_API_PATH=/api/v4 \
         --env=SCHEME=https \
         --env=BOT_TOKEN= \

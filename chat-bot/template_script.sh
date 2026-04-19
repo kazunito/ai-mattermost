@@ -7,7 +7,7 @@
 
 # Mattermost
 export MATTERMOST_URL=matter.example.com
-export MATTERMOST_PORT=8065
+export MATTERMOST_PORT=443
 export MATTERMOST_API_PATH=/api/v4
 export SCHEME=https
 export BOT_TOKEN=
