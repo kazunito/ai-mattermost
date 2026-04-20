@@ -1,5 +1,7 @@
+import base64
 import json
 import logging
+import mimetypes
 import os
 import re
 import signal
@@ -31,10 +33,22 @@ def handler(signum, frame):
     sys.exit(0)
 
 
+CLAUDE_IMAGE_MIME_TYPES = {
+    "image/jpeg", "image/png", "image/gif", "image/webp"
+}
+CLAUDE_DOCUMENT_MIME_TYPES = {"application/pdf"}
+
+GEMINI_SUPPORTED_MIME_TYPES = {
+    "application/pdf",
+    "image/png", "image/jpeg", "image/webp",
+    "image/heic", "image/heif"
+}
+
+
 class LLMProvider(ABC):
     @abstractmethod
     def build_messages(self, thread, bot_id: str, bot_username: str,
-                       context: str) -> list:
+                       context: str, files_by_post_id: dict) -> list:
         ...
 
     @abstractmethod
@@ -54,7 +68,8 @@ class GeminiProvider(LLMProvider):
             os.environ.get("AI_MODEL") or "gemini-1.5-flash"
         )
 
-    def build_messages(self, thread, bot_id, bot_username, context):
+    def build_messages(self, thread, bot_id, bot_username, context,
+                       files_by_post_id):
         requestMessages = []
 
         for post_id in thread["order"]:
@@ -66,23 +81,38 @@ class GeminiProvider(LLMProvider):
                 # Remove mentions of the bot.
                 message = post["message"].replace("@" + bot_username, "")
 
-                if len(requestMessages) == 0:
-                    # Add context to the first message.
-                    requestMessages.append(
-                        {
-                            "role": "user",
-                            "parts": ["Context: " + context + "\nMessage: " + message]
-                        }
-                    )
+                file_parts, skipped = self._build_file_parts(
+                    files_by_post_id.get(post_id) or [])
+                if skipped:
+                    message = (message + "\n" + skipped).strip()
+
+                text_prefix = ("Context: " + context + "\nMessage: "
+                               if len(requestMessages) == 0 else "Message: ")
+                new_parts = file_parts + [text_prefix + message]
+
+                if (len(requestMessages) > 0
+                        and requestMessages[-1]["role"] == "user"):
+                    # Append to the existing user turn so consecutive user
+                    # posts (and their files) go into a single request entry.
+                    requestMessages[-1]["parts"].extend(new_parts)
                 else:
-                    if requestMessages[-1]["role"] == "user":
-                        # If there are consecutive user posts, add them to parts.
-                        requestMessages[-1]["parts"][0] += "\nMessage: " + message
-                    else:
-                        requestMessages.append(
-                            {"role": "user", "parts": ["Message: " + message]})
+                    requestMessages.append(
+                        {"role": "user", "parts": new_parts})
 
         return requestMessages
+
+    def _build_file_parts(self, files):
+        parts = []
+        skipped = []
+        for f in files:
+            mime = f["mime_type"]
+            if mime in GEMINI_SUPPORTED_MIME_TYPES:
+                parts.append({"mime_type": mime, "data": f["data"]})
+            else:
+                skipped.append(
+                    f"[Attachment '{f['filename']}' ({mime}) skipped: "
+                    "unsupported by Gemini]")
+        return parts, "\n".join(skipped)
 
     def stream(self, messages, context):
         response = self.model.generate_content(messages, stream=True)
@@ -99,7 +129,8 @@ class ClaudeProvider(LLMProvider):
         self.model = os.environ.get("AI_MODEL") or "claude-sonnet-4-6"
         self.max_tokens = int(os.environ.get("AI_MAX_TOKENS") or "4096")
 
-    def build_messages(self, thread, bot_id, bot_username, context):
+    def build_messages(self, thread, bot_id, bot_username, context,
+                       files_by_post_id):
         requestMessages = []
 
         for post_id in thread["order"]:
@@ -111,16 +142,59 @@ class ClaudeProvider(LLMProvider):
                 # Remove mentions of the bot.
                 message = post["message"].replace("@" + bot_username, "")
 
+                file_blocks, skipped = self._build_file_blocks(
+                    files_by_post_id.get(post_id) or [])
+                if skipped:
+                    message = (message + "\n" + skipped).strip()
+
+                blocks = list(file_blocks)
+                if message or not blocks:
+                    blocks.append({"type": "text", "text": message})
+
                 # Claude rejects consecutive messages with the same role,
-                # so merge them.
+                # so merge them into a single content list.
                 if (len(requestMessages) > 0
                         and requestMessages[-1]["role"] == "user"):
-                    requestMessages[-1]["content"] += "\n" + message
+                    prev = requestMessages[-1]["content"]
+                    if isinstance(prev, str):
+                        prev = [{"type": "text", "text": prev}]
+                    prev.extend(blocks)
+                    requestMessages[-1]["content"] = prev
                 else:
                     requestMessages.append(
-                        {"role": "user", "content": message})
+                        {"role": "user", "content": blocks})
 
         return requestMessages
+
+    def _build_file_blocks(self, files):
+        blocks = []
+        skipped = []
+        for f in files:
+            mime = f["mime_type"]
+            data_b64 = base64.standard_b64encode(f["data"]).decode("ascii")
+            if mime in CLAUDE_DOCUMENT_MIME_TYPES:
+                blocks.append({
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": mime,
+                        "data": data_b64,
+                    },
+                })
+            elif mime in CLAUDE_IMAGE_MIME_TYPES:
+                blocks.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": mime,
+                        "data": data_b64,
+                    },
+                })
+            else:
+                skipped.append(
+                    f"[Attachment '{f['filename']}' ({mime}) skipped: "
+                    "unsupported by Claude]")
+        return blocks, "\n".join(skipped)
 
     def stream(self, messages, context):
         with self.client.messages.stream(
@@ -143,7 +217,9 @@ class DeepSeekProvider(LLMProvider):
         self.model = os.environ.get("AI_MODEL") or "deepseek-chat"
         self.max_tokens = int(os.environ.get("AI_MAX_TOKENS") or "4096")
 
-    def build_messages(self, thread, bot_id, bot_username, context):
+    def build_messages(self, thread, bot_id, bot_username, context,
+                       files_by_post_id):
+        # DeepSeek is text-only; attachments are ignored here.
         requestMessages = []
 
         for post_id in thread["order"]:
@@ -154,6 +230,14 @@ class DeepSeekProvider(LLMProvider):
             else:
                 # Remove mentions of the bot.
                 message = post["message"].replace("@" + bot_username, "")
+
+                skipped = [
+                    f"[Attachment '{f['filename']}' ({f['mime_type']}) "
+                    "skipped: DeepSeek does not accept files]"
+                    for f in files_by_post_id.get(post_id) or []
+                ]
+                if skipped:
+                    message = (message + "\n" + "\n".join(skipped)).strip()
 
                 # Merge consecutive user messages to keep the turn
                 # structure simple.
@@ -225,12 +309,18 @@ class ChatBot(Plugin):
         # Use channel header as context.
         context = channel["header"]
 
+        # Download files attached to thread posts so they can be passed to
+        # multimodal providers (Claude / Gemini).
+        files_by_post_id = self._load_thread_files(thread)
+
         # Assemble the request message.
         # TODO: Check if the number of tokens is exceeded.
         requestMessages = self.provider.build_messages(
-            thread, self.driver.user_id, self.driver.username, context)
+            thread, self.driver.user_id, self.driver.username, context,
+            files_by_post_id)
         log.info("API Request: " +
-                 json.dumps(requestMessages, ensure_ascii=False))
+                 json.dumps(requestMessages, ensure_ascii=False,
+                            default=self._log_default))
 
         ws = None
         stop_typing = threading.Event()
@@ -296,6 +386,77 @@ class ChatBot(Plugin):
             stop_typing.set()
             if ws is not None:
                 ws.close()
+
+    def _load_thread_files(self, thread) -> dict:
+        """
+        Download files attached to posts in the thread.
+        Returns dict[post_id -> list of {file_id, filename, mime_type, data}].
+        """
+
+        if self.driver is None:
+            raise ValueError("self.driver is None")
+
+        files_by_post_id: dict = {}
+
+        for post_id in thread["order"]:
+            post = thread["posts"][post_id]
+            file_ids = post.get("file_ids") or []
+            if not file_ids:
+                continue
+
+            # Prefer metadata.files when available — it already contains
+            # the per-file info (name, mime_type, size) so we can avoid
+            # an extra get_file_info call per file.
+            metadata = post.get("metadata") or {}
+            info_map = {
+                f.get("id"): f for f in (metadata.get("files") or [])
+            }
+
+            loaded = []
+            for file_id in file_ids:
+                try:
+                    info = info_map.get(file_id)
+                    if info is None:
+                        info = self.driver.files.get_file_info(  # type: ignore
+                            file_id)
+                    if not isinstance(info, dict):
+                        info = dict(info)
+
+                    mime = info.get("mime_type") or ""
+                    if not mime:
+                        guessed, _ = mimetypes.guess_type(
+                            info.get("name") or "")
+                        mime = guessed or "application/octet-stream"
+
+                    raw = self.driver.files.get_file(file_id)  # type: ignore
+                    if isinstance(raw, (bytes, bytearray)):
+                        data = bytes(raw)
+                    elif hasattr(raw, "content"):
+                        data = raw.content  # httpx.Response
+                    else:
+                        data = bytes(raw)
+
+                    loaded.append({
+                        "file_id": file_id,
+                        "filename": info.get("name") or file_id,
+                        "mime_type": mime,
+                        "data": data,
+                    })
+                except Exception:
+                    log.warning(
+                        f"Failed to download file {file_id}:\n"
+                        f"{traceback.format_exc()}")
+
+            if loaded:
+                files_by_post_id[post_id] = loaded
+
+        return files_by_post_id
+
+    @staticmethod
+    def _log_default(obj):
+        if isinstance(obj, (bytes, bytearray)):
+            return f"<bytes len={len(obj)}>"
+        return f"<{type(obj).__name__}>"
 
     def is_reply_required(self, thread, sender_name: str, channel) -> bool:
         """
