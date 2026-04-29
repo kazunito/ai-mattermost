@@ -1,4 +1,5 @@
 import base64
+import collections
 import json
 import logging
 import mimetypes
@@ -43,6 +44,117 @@ GEMINI_SUPPORTED_MIME_TYPES = {
     "image/png", "image/jpeg", "image/webp",
     "image/heic", "image/heif"
 }
+
+
+# AWS SNS alerts forwarded by incoming webhook share a header line of the
+# form ":emoji: <header text> (<region>)". This regex matches that line.
+AWS_ALERT_HEADER_RE = re.compile(
+    r"^\s*(?P<emoji>:[a-z0-9_+\-]+:)\s+.+\(\s*(?P<region>[^)]+?)\s*\)\s*$",
+    re.MULTILINE,
+)
+# Emojis that signal a successful / informational state — no response needed.
+AWS_ALERT_SKIP_EMOJIS = {
+    ":white_check_mark:", ":heavy_check_mark:", ":ok:"
+}
+AWS_ALERT_CHANNEL_IDS = frozenset(
+    cid.strip()
+    for cid in (os.environ.get("AWS_ALERT_CHANNEL_IDS") or "").split(",")
+    if cid.strip()
+)
+AWS_ALERT_SYSTEM_PROMPT = """\
+あなたはAWS運用を支援する日本語AIです。Mattermostに転送されたAWSのSNSアラート (Security Hub / CloudWatch Alarm / RDS Event / AWS Backup など) について、以下の構造で簡潔に回答してください。
+
+## 1. 事象の要約
+1〜2行で何が起きたかを書いてください。リソースID/ARNが判明している場合は明記。
+
+## 2. 想定される影響
+業務・システムへの影響 (停止・性能劣化・コンプライアンス違反・コスト等) を述べてください。
+
+## 3. 確認手順
+AWSマネジメントコンソールの経路、または `aws` CLI コマンドの例を示してください。
+
+## 4. 推奨対応
+優先度順にアクションを列挙してください。
+- Security Hub: 該当コントロールの修復手順 (AWS公式ドキュメントの該当ページ) を案内。
+- CloudWatch Alarm: 一時対応と恒久対応を分けて記載。
+- RDS Event: 容量拡張・パラメータ変更などの具体手順を提示。
+- AWS Backup 失敗 (FAILED/ABORTED/EXPIRED): IAM/Vault/ライフサイクル設定の確認観点を提示。
+
+判断に必要な情報が不足している場合は推測せず「追加情報が必要」と明示してください。
+"""
+
+
+def is_aws_alert_actionable(text: str) -> bool:
+    """
+    True if `text` looks like an AWS SNS alert that warrants a response.
+    Skips success / informational notifications and CloudWatch alarms whose
+    current state is OK.
+    """
+    if not text:
+        return False
+    m = AWS_ALERT_HEADER_RE.search(text)
+    if not m:
+        return False
+    if m.group("emoji") in AWS_ALERT_SKIP_EMOJIS:
+        return False
+    # CloudWatch Alarm cleared: the body shows "状態: OK (... → OK)".
+    if re.search(r"状態:\s*OK\b", text):
+        return False
+    return True
+
+
+def thread_has_aws_alert(thread) -> bool:
+    for post_id in thread["order"]:
+        post = thread["posts"][post_id]
+        if (post.get("props") or {}).get("from_webhook") != "true":
+            continue
+        if is_aws_alert_actionable(post.get("message") or ""):
+            return True
+    return False
+
+
+def _env_int(name: str, default: int) -> int:
+    """
+    Parse an integer env var. Strips inline `#` comments and whitespace so
+    that values like "5  # max" do not crash startup.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    raw = raw.split("#", 1)[0].strip()
+    if not raw:
+        return default
+    return int(raw)
+
+
+# Sliding-window rate limit for webhook-triggered AWS alert replies.
+# Set AWS_ALERT_RATE_LIMIT=0 to disable.
+AWS_ALERT_RATE_LIMIT = _env_int("AWS_ALERT_RATE_LIMIT", 5)
+AWS_ALERT_RATE_WINDOW_SECONDS = _env_int(
+    "AWS_ALERT_RATE_WINDOW_SECONDS", 600)
+_aws_alert_rate_lock = threading.Lock()
+_aws_alert_rate_history: dict = {}  # channel_id -> deque[float timestamps]
+
+
+def aws_alert_rate_limit_allow(channel_id: str) -> bool:
+    """
+    Returns True if a webhook-triggered reply is allowed for `channel_id`
+    (and records the timestamp). Returns False if the channel is currently
+    over the configured threshold.
+    """
+    if AWS_ALERT_RATE_LIMIT <= 0:
+        return True
+    now = time.time()
+    cutoff = now - AWS_ALERT_RATE_WINDOW_SECONDS
+    with _aws_alert_rate_lock:
+        history = _aws_alert_rate_history.setdefault(
+            channel_id, collections.deque())
+        while history and history[0] < cutoff:
+            history.popleft()
+        if len(history) >= AWS_ALERT_RATE_LIMIT:
+            return False
+        history.append(now)
+        return True
 
 
 class LLMProvider(ABC):
@@ -309,6 +421,24 @@ class ChatBot(Plugin):
         # Use channel header as context.
         context = channel["header"]
 
+        # AWS SNS alert channels: rate-limit auto-replies to webhook bursts
+        # (e.g. Security Hub finding floods) so the channel does not get
+        # buried in bot responses. Human @mention follow-ups are not limited.
+        if channel["id"] in AWS_ALERT_CHANNEL_IDS:
+            latest_post = thread["posts"][thread["order"][-1]]
+            is_webhook = (latest_post.get("props") or {}).get(
+                "from_webhook") == "true"
+            if is_webhook and not aws_alert_rate_limit_allow(
+                    channel["id"]):
+                log.warning(
+                    "AWS alert rate limit hit for channel "
+                    f"{channel['id']} ({AWS_ALERT_RATE_LIMIT} replies / "
+                    f"{AWS_ALERT_RATE_WINDOW_SECONDS}s); skipping reply.")
+                return
+            if thread_has_aws_alert(thread):
+                context = AWS_ALERT_SYSTEM_PROMPT + "\n\n" + (
+                    context or "")
+
         # Download files attached to thread posts so they can be passed to
         # multimodal providers (Claude / Gemini).
         files_by_post_id = self._load_thread_files(thread)
@@ -470,6 +600,17 @@ class ChatBot(Plugin):
         # do not reply to messages by users beginning with "ai-".
         if sender_name.startswith("ai-"):
             return False
+
+        # AWS SNS alert channels: respond to actionable webhook posts even
+        # without an @mention; explicitly stay silent on success / OK
+        # notifications so the channel does not get spammed.
+        if channel.get("id") in AWS_ALERT_CHANNEL_IDS:
+            latest_post = thread["posts"][thread["order"][-1]]
+            is_webhook = (latest_post.get("props") or {}).get(
+                "from_webhook") == "true"
+            if is_webhook:
+                return is_aws_alert_actionable(
+                    latest_post.get("message") or "")
 
         # Direct messages ("D") and group messages ("G") are addressed to the
         # bot by definition, so reply without requiring an @mention.

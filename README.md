@@ -93,6 +93,9 @@ Please refer to `bot.env`, `template_script.sh` and `template_container.sh`.
 | AI_MAX_TOKENS | no (default: 4096, Claude/DeepSeek only) | 4096 |
 | AI_API_KEY | yes | yyyyyyyy |
 | DEEPSEEK_BASE_URL | no (default: `https://api.deepseek.com`, DeepSeek only) | <https://api.deepseek.com> |
+| AWS_ALERT_CHANNEL_IDS | no (default: empty — feature disabled) | `abc123...,def456...` |
+| AWS_ALERT_RATE_LIMIT | no (default: `5`; `0` disables) | `5` |
+| AWS_ALERT_RATE_WINDOW_SECONDS | no (default: `600`) | `600` |
 
 ### Example `bot.env` per provider
 
@@ -141,6 +144,17 @@ AI_API_KEY=wwwwwwww
 # DEEPSEEK_BASE_URL=https://api.deepseek.com
 ```
 
+To enable [AWS SNS alert handling](#aws-sns-alert-handling-optional) on
+top of any provider, append the following to `bot.env`:
+
+```env
+# Channel IDs that receive AWS SNS webhooks (comma-separated).
+AWS_ALERT_CHANNEL_IDS=<channel-id-1>,<channel-id-2>
+# At most 5 auto-replies per 600s per channel.
+AWS_ALERT_RATE_LIMIT=5
+AWS_ALERT_RATE_WINDOW_SECONDS=600
+```
+
 ## Usage
 
 The bot uses the channel header as a system prompt.
@@ -151,6 +165,58 @@ If you reply to the thread, you can continue the conversation.
 You do not need to re-mention the bot at this time.
 
 <!-- TODO: replace with a new chat sample image -->
+
+## AWS SNS alert handling (optional)
+
+In addition to regular chat, the bot can act as an AWS operations
+assistant for Mattermost channels that receive AWS SNS notifications via
+incoming webhooks. When a webhook posts an actionable alert
+(Security Hub finding, CloudWatch Alarm firing, RDS Event such as a
+storage threshold warning, AWS Backup failure, etc.) in a designated
+channel, the bot replies — without requiring an `@mention` — with a
+structured Japanese response covering:
+
+1. 事象の要約 (summary)
+2. 想定される影響 (impact)
+3. 確認手順 (investigation steps — console path or `aws` CLI example)
+4. 推奨対応 (recommended actions)
+
+Posts that signal a healthy state (e.g. `:white_check_mark:` AWS Backup
+COMPLETED, CloudWatch Alarm clearing to OK) are silently skipped so the
+channel does not get spammed.
+
+To enable:
+
+1. Set `AWS_ALERT_CHANNEL_IDS` in `bot.env` to a comma-separated list of
+   the Mattermost channel IDs that receive the SNS webhooks.
+   To find a channel ID, open the channel in Mattermost and click the
+   channel name in the header — the **Channel Info / View Info** dialog
+   shows a 26-character alphanumeric ID (e.g.
+   `abcdefghijk1234567890mnopq`) that you can copy. Alternatively, on a server with `mmctl` installed:
+   `mmctl channel search <channel-name>`.
+2. Add the bot user as a member of each of those channels (the bot does
+   not receive messages from channels it has not joined).
+3. Restart the service. Env vars are loaded once at startup.
+
+To prevent flooding when many alerts arrive at once (e.g. Security Hub
+compliance scans flagging dozens of findings), auto-replies are
+rate-limited **per channel** via `AWS_ALERT_RATE_LIMIT` and
+`AWS_ALERT_RATE_WINDOW_SECONDS` (default: at most 5 replies per 10
+minutes per channel; set `AWS_ALERT_RATE_LIMIT=0` to disable).
+
+The expected webhook message format is:
+
+```
+:emoji: <header text> (<region>)
+
+<key>: <value>
+<key>: <value>
+...
+```
+
+The first-line `(region)` token is the trigger; both Mattermost-formatted
+plain text (as posted by typical SNS-to-webhook Lambda relays) and
+Markdown-style payloads are recognized.
 
 ## License
 
